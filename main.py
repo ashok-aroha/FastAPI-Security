@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Optional, List
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -31,14 +31,14 @@ class Token(BaseModel):
 
 
 class TokenData(BaseModel):
-    username: str | None = None
+    username: Optional[str] = None
 
 
 class User(BaseModel):
     username: str
-    email: str | None = None
-    full_name: str | None = None
-    disabled: bool | None = None
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    disabled: Optional[bool] = None
 
 
 class UserInDB(User):
@@ -46,10 +46,10 @@ class UserInDB(User):
     
 class UserCreate(BaseModel):
     username: str
-    email: str
-    full_name: str
+    email: Optional[str] = None
+    full_name: Optional[str] = None
     password: SecretStr
-    disabled: bool = False
+    disabled: Optional[bool] = None
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -81,7 +81,7 @@ def authenticate_user(fake_db, username: str, password: str):
     return user
 
 
-def create_access_token(data: dict, expires_delta: timedelta | None = None):
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
@@ -162,3 +162,10 @@ async def create_user(user: UserCreate, current_user: Annotated[User, Depends(ge
         "disabled": user.disabled,
     }
     return {**user.dict(), "disabled": user.disabled}
+
+@app.get("/users", response_model=List[User])
+async def get_all_users(current_user: Annotated[User, Depends(get_current_active_user)]):
+    if current_user.username not in fake_users_db:  # Assuming you have a list of admin users
+        raise HTTPException(status_code=403, detail="Operation not permitted")
+    
+    return list(fake_users_db.values())
