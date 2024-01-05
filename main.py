@@ -22,15 +22,6 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 
-fake_users_db = {
-    "johndoe": {
-        "username": "johndoe",
-        "full_name": "John Doe",
-        "email": "johndoe@example.com",
-        "hashed_password": "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW",
-        "disabled": False,
-    }
-}
 
 
 # Initialize Kafka producer
@@ -109,14 +100,14 @@ def get_password_hash(password):
     return pwd_context.hash(password)
 
 
-def get_user(db, username: str):
-    if username in db:
-        user_dict = db[username]
-        return UserInDB(**user_dict)
+async def get_user(username: str):
+    user = await collection.find_one({"username": username})
+    if user:
+        return UserInDB(**user)
 
 
-def authenticate_user(fake_db, username: str, password: str):
-    user = get_user(fake_db, username)
+async def authenticate_user(username: str, password: str):
+    user = await get_user(username)
     if not user:
         return False
     if not verify_password(password, user.hashed_password):
@@ -149,7 +140,7 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
         token_data = TokenData(username=username)
     except JWTError:
         raise credentials_exception
-    user = get_user(fake_users_db, username=token_data.username)
+    user = await get_user(username=token_data.username)
     if user is None:
         raise credentials_exception
     return user
@@ -167,7 +158,7 @@ async def get_current_active_user(
 async def login_for_access_token(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()]
 ):
-    user = authenticate_user(fake_users_db, form_data.username, form_data.password)
+    user = await authenticate_user(form_data.username, form_data.password)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -197,16 +188,18 @@ async def read_users_me(current_user: Annotated[User, Depends(get_current_active
 
 @app.post("/create-user", response_model=User)
 async def create_user(user: UserCreate, current_user: Annotated[User, Depends(get_current_active_user)]):
-    if current_user.username not in fake_users_db:  # Assuming you have a list of admin users
+    # Check if the current user is an admin
+    admin_user = await collection.find_one({"username": current_user.username})
+    if not admin_user:
         raise HTTPException(status_code=403, detail="Operation not permitted")
-    
-    if user.username in fake_users_db:
+
+    # Check if user already exists in MongoDB
+    existing_user = await collection.find_one({"username": user.username})
+    if existing_user:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"User with username '{user.username}' already exists"
         )
-
-    
     # Transfer data to Kafka
     hashed_password = get_password_hash(user.password.get_secret_value())
     kafka_data = {
@@ -218,11 +211,12 @@ async def create_user(user: UserCreate, current_user: Annotated[User, Depends(ge
     }
 
     producer.send("user-topic", json.dumps(kafka_data).encode("utf-8"))
-    return {**user.dict(), "disabled": user.disabled}
+    return {**user.dict(), "disabled": user.disabled, "password": "****"}
 
 @app.get("/users", response_model=List[User])
 async def get_all_users(current_user: Annotated[User, Depends(get_current_active_user)]):
-    if current_user.username not in fake_users_db:  # Replace this with admin check
+    user = await collection.find_one({"username": current_user.username})
+    if not user:
         raise HTTPException(status_code=403, detail="Operation not permitted")
     users = await collection.find().to_list(None)
     return users
