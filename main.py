@@ -5,7 +5,7 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 # to get a string like this run:
 # openssl rand -hex 32
@@ -44,7 +44,12 @@ class User(BaseModel):
 class UserInDB(User):
     hashed_password: str
     
-
+class UserCreate(BaseModel):
+    username: str
+    email: str
+    full_name: str
+    password: SecretStr
+    disabled: bool = False
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -134,14 +139,26 @@ async def login_for_access_token(
 
 
 @app.get("/users/me/", response_model=User)
-async def read_users_me(
-    current_user: Annotated[User, Depends(get_current_active_user)]
-):
+async def read_users_me(current_user: Annotated[User, Depends(get_current_active_user)]):
     return current_user
 
 
-@app.get("/users/me/items/")
-async def read_own_items(
-    current_user: Annotated[User, Depends(get_current_active_user)]
-):
-    return [{"item_id": "Foo", "owner": current_user.username}]
+@app.post("/create-user", response_model=User)
+async def create_user(user: UserCreate, current_user: Annotated[User, Depends(get_current_active_user)]):
+    if current_user.username not in fake_users_db:  # Assuming you have a list of admin users
+        raise HTTPException(status_code=403, detail="Operation not permitted")
+    
+    if user.username in fake_users_db:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"User with username '{user.username}' already exists"
+        )
+    hashed_password = get_password_hash(user.password.get_secret_value())
+    fake_users_db[user.username] = {
+        "username": user.username,
+        "full_name": user.full_name,
+        "email": user.email,
+        "hashed_password": hashed_password,
+        "disabled": user.disabled,
+    }
+    return {**user.dict(), "disabled": user.disabled}
