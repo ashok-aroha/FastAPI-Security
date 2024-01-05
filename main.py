@@ -1,3 +1,6 @@
+import json
+import asyncio
+
 from datetime import datetime, timedelta
 from typing import Annotated, Optional, List
 
@@ -6,6 +9,11 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, SecretStr
+from motor.motor_asyncio import AsyncIOMotorClient
+from kafka import KafkaProducer
+from aiokafka import AIOKafkaConsumer
+from threading import Thread
+from aiokafka.errors import KafkaError
 
 # to get a string like this run:
 # openssl rand -hex 32
@@ -23,6 +31,17 @@ fake_users_db = {
         "disabled": False,
     }
 }
+
+
+# Initialize Kafka producer
+KAFKA_SERVER = "kafka:9092"
+producer = KafkaProducer(bootstrap_servers=KAFKA_SERVER)
+
+# MongoDB configuration
+MONGO_URI = "mongodb://mongodb:27017"
+client = AsyncIOMotorClient(MONGO_URI)
+db = client["mydatabase"]
+collection = db["users"]
 
 
 class Token(BaseModel):
@@ -51,9 +70,33 @@ class UserCreate(BaseModel):
     password: SecretStr
     disabled: Optional[bool] = None
 
+# Async function to process messages from Kafka and insert into MongoDB
+async def consume_and_process():
+    while True:
+        try:
+            consumer = AIOKafkaConsumer(
+                "user-topic",
+                bootstrap_servers=KAFKA_SERVER,
+                value_deserializer=lambda m: m.decode('utf-8')
+            )
+            await consumer.start()
+
+            async for msg in consumer:
+                user_data = json.loads(msg.value)
+                print("Received data:", user_data)
+                await collection.insert_one(user_data)
+        except KafkaError:
+            print("Topic user-topic not available. Retrying in 5 seconds.")
+            await asyncio.sleep(5)
+
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# Start the Kafka consumer in a separate thread
+consumer_thread = Thread(target=consume_and_process)
+consumer_thread.start()
 
 app = FastAPI()
 
@@ -138,6 +181,15 @@ async def login_for_access_token(
     return {"access_token": access_token, "token_type": "bearer"}
 
 
+# Start the Kafka consumer
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(consume_and_process())
+    
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    client.close()
+
 @app.get("/users/me/", response_model=User)
 async def read_users_me(current_user: Annotated[User, Depends(get_current_active_user)]):
     return current_user
@@ -153,19 +205,24 @@ async def create_user(user: UserCreate, current_user: Annotated[User, Depends(ge
             status_code=400, 
             detail=f"User with username '{user.username}' already exists"
         )
+
+    
+    # Transfer data to Kafka
     hashed_password = get_password_hash(user.password.get_secret_value())
-    fake_users_db[user.username] = {
+    kafka_data = {
         "username": user.username,
         "full_name": user.full_name,
         "email": user.email,
-        "hashed_password": hashed_password,
         "disabled": user.disabled,
+        "hashed_password": hashed_password
     }
+
+    producer.send("user-topic", json.dumps(kafka_data).encode("utf-8"))
     return {**user.dict(), "disabled": user.disabled}
 
 @app.get("/users", response_model=List[User])
 async def get_all_users(current_user: Annotated[User, Depends(get_current_active_user)]):
-    if current_user.username not in fake_users_db:  # Assuming you have a list of admin users
+    if current_user.username not in fake_users_db:  # Replace this with admin check
         raise HTTPException(status_code=403, detail="Operation not permitted")
-    
-    return list(fake_users_db.values())
+    users = await collection.find().to_list(None)
+    return users
