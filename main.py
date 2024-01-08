@@ -181,9 +181,8 @@ async def shutdown_db_client():
     client.close()
 
 @app.get("/users/me/", response_model=User)
-async def read_users_me(current_user: User):
+async def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
-
 
 @app.post("/create-user", response_model=User)
 async def create_user(user: UserCreate, current_user: Annotated[User, Depends(get_current_active_admin)]):
