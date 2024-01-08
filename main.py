@@ -21,9 +21,6 @@ SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-
-
-
 # Initialize Kafka producer
 KAFKA_SERVER = "kafka:9092"
 producer = KafkaProducer(bootstrap_servers=KAFKA_SERVER)
@@ -48,7 +45,8 @@ class User(BaseModel):
     username: str
     email: Optional[str] = None
     full_name: Optional[str] = None
-    disabled: Optional[bool] = None
+    disabled: Optional[bool] = False
+    is_admin: Optional[bool] = False
 
 
 class UserInDB(User):
@@ -59,7 +57,8 @@ class UserCreate(BaseModel):
     email: Optional[str] = None
     full_name: Optional[str] = None
     password: SecretStr
-    disabled: Optional[bool] = None
+    disabled: Optional[bool] = False
+    is_admin: Optional[bool] = False
 
 # Async function to process messages from Kafka and insert into MongoDB
 async def consume_and_process():
@@ -146,11 +145,12 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
     return user
 
 
-async def get_current_active_user(
+async def get_current_active_admin(
     current_user: Annotated[User, Depends(get_current_user)]
 ):
-    if current_user.disabled:
-        raise HTTPException(status_code=400, detail="Inactive user")
+
+    if not current_user.is_admin:
+        raise HTTPException(status_code=400, detail="Not an admin user")
     return current_user
 
 
@@ -182,12 +182,12 @@ async def shutdown_db_client():
     client.close()
 
 @app.get("/users/me/", response_model=User)
-async def read_users_me(current_user: Annotated[User, Depends(get_current_active_user)]):
+async def read_users_me(current_user: User):
     return current_user
 
 
 @app.post("/create-user", response_model=User)
-async def create_user(user: UserCreate, current_user: Annotated[User, Depends(get_current_active_user)]):
+async def create_user(user: UserCreate, current_user: Annotated[User, Depends(get_current_active_admin)]):
     # Check if the current user is an admin
     admin_user = await collection.find_one({"username": current_user.username})
     if not admin_user:
@@ -207,16 +207,40 @@ async def create_user(user: UserCreate, current_user: Annotated[User, Depends(ge
         "full_name": user.full_name,
         "email": user.email,
         "disabled": user.disabled,
-        "hashed_password": hashed_password
+        "hashed_password": hashed_password,
+        "is_admin": user.is_admin 
     }
 
     producer.send("user-topic", json.dumps(kafka_data).encode("utf-8"))
-    return {**user.dict(), "disabled": user.disabled, "password": "****"}
+    return {**user.dict(), "disabled": user.disabled, "password": "****", "is_admin": user.is_admin}
 
 @app.get("/users", response_model=List[User])
-async def get_all_users(current_user: Annotated[User, Depends(get_current_active_user)]):
+async def get_all_users(current_user: Annotated[User, Depends(get_current_active_admin)]):
     user = await collection.find_one({"username": current_user.username})
     if not user:
         raise HTTPException(status_code=403, detail="Operation not permitted")
     users = await collection.find().to_list(None)
     return users
+
+@app.post("/register", response_model=User, status_code=status.HTTP_201_CREATED)
+async def register(user: UserCreate):
+    existing_user = await collection.find_one({"username": user.username})
+    if existing_user:
+        raise HTTPException(
+            status_code=400,
+            detail=f"User with username '{user.username}' already exists"
+        )
+
+    hashed_password = get_password_hash(user.password.get_secret_value())
+    user_data = {
+        "username": user.username,
+        "full_name": user.full_name,
+        "email": user.email,
+        "disabled": user.disabled,
+        "hashed_password": hashed_password,
+        "is_admin": user.is_admin
+    }
+    
+
+    producer.send("user-topic", json.dumps(user_data).encode("utf-8"))
+    return {**user.dict(), "disabled": user.disabled, "password": "****", "is_admin": user.is_admin}
