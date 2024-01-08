@@ -12,8 +12,8 @@ from pydantic import BaseModel, SecretStr
 from motor.motor_asyncio import AsyncIOMotorClient
 from kafka import KafkaProducer
 from aiokafka import AIOKafkaConsumer
-from threading import Thread
 from aiokafka.errors import KafkaError
+from threading import Thread
 
 # to get a string like this run:
 # openssl rand -hex 32
@@ -62,22 +62,21 @@ class UserCreate(BaseModel):
 
 # Async function to process messages from Kafka and insert into MongoDB
 async def consume_and_process():
-    while True:
-        try:
-            consumer = AIOKafkaConsumer(
-                "user-topic",
-                bootstrap_servers=KAFKA_SERVER,
-                value_deserializer=lambda m: m.decode('utf-8')
-            )
-            await consumer.start()
+    try:
+        consumer = AIOKafkaConsumer(
+            "user-topic",
+            bootstrap_servers=KAFKA_SERVER,
+            value_deserializer=lambda m: m.decode('utf-8')
+        )
+        await consumer.start()
 
-            async for msg in consumer:
-                user_data = json.loads(msg.value)
-                print("Received data:", user_data)
-                await collection.insert_one(user_data)
-        except KafkaError:
-            print("Topic user-topic not available. Retrying in 5 seconds.")
-            await asyncio.sleep(5)
+        async for msg in consumer:
+            user_data = json.loads(msg.value)
+            print("Received data:", user_data)
+            await collection.insert_one(user_data)
+    except KafkaError as e:
+        print(f"Kafka error: {e}. Retrying in 5 seconds.")
+        await asyncio.sleep(5)
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
