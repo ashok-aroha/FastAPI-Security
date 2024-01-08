@@ -180,6 +180,29 @@ async def startup_event():
 async def shutdown_db_client():
     client.close()
 
+@app.post("/register", response_model=User, status_code=status.HTTP_201_CREATED)
+async def register(user: UserCreate):
+    existing_user = await collection.find_one({"username": user.username})
+    if existing_user:
+        raise HTTPException(
+            status_code=400,
+            detail=f"User with username '{user.username}' already exists"
+        )
+
+    hashed_password = get_password_hash(user.password.get_secret_value())
+    user_data = {
+        "username": user.username,
+        "full_name": user.full_name,
+        "email": user.email,
+        "disabled": user.disabled,
+        "hashed_password": hashed_password,
+        "is_admin": user.is_admin
+    }
+    
+
+    producer.send("user-topic", json.dumps(user_data).encode("utf-8"))
+    return {**user.dict(), "disabled": user.disabled, "password": "****", "is_admin": user.is_admin}
+
 @app.get("/users/me/", response_model=User)
 async def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
@@ -220,25 +243,3 @@ async def get_all_users(current_user: Annotated[User, Depends(get_current_active
     users = await collection.find().to_list(None)
     return users
 
-@app.post("/register", response_model=User, status_code=status.HTTP_201_CREATED)
-async def register(user: UserCreate):
-    existing_user = await collection.find_one({"username": user.username})
-    if existing_user:
-        raise HTTPException(
-            status_code=400,
-            detail=f"User with username '{user.username}' already exists"
-        )
-
-    hashed_password = get_password_hash(user.password.get_secret_value())
-    user_data = {
-        "username": user.username,
-        "full_name": user.full_name,
-        "email": user.email,
-        "disabled": user.disabled,
-        "hashed_password": hashed_password,
-        "is_admin": user.is_admin
-    }
-    
-
-    producer.send("user-topic", json.dumps(user_data).encode("utf-8"))
-    return {**user.dict(), "disabled": user.disabled, "password": "****", "is_admin": user.is_admin}
