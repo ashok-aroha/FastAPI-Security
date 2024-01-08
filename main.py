@@ -14,19 +14,15 @@ from kafka import KafkaProducer
 from aiokafka import AIOKafkaConsumer
 from aiokafka.errors import KafkaError
 from threading import Thread
+from config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, KAFKA_SERVER, MONGO_URI
 
 # to get a string like this run:
-# openssl rand -hex 32
-SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
 
 # Initialize Kafka producer
-KAFKA_SERVER = "kafka:9092"
 producer = KafkaProducer(bootstrap_servers=KAFKA_SERVER)
 
 # MongoDB configuration
-MONGO_URI = "mongodb://mongodb:27017"
 client = AsyncIOMotorClient(MONGO_URI)
 db = client["mydatabase"]
 collection = db["users"]
